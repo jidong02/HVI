@@ -105,6 +105,48 @@ class DICAM(nn.Module):
 # ============================================================
 #  Ours: CAM-style Dual-Prior Fusion
 # ============================================================
+class DICAM_Feat(nn.Module):
+    """
+    DICAM as feature extractor (outputs 256-channel features).
+
+    Reuses the first 8 layers of DICAM (3 per-channel Inception + 3 per-channel CAM
+    + layer_3 + layer_4), removes the tail (256→24→3+Sigmoid).
+
+    Can load pretrained weights from DICAM_60.pt directly (key names match).
+    """
+    def __init__(self):
+        super(DICAM_Feat, self).__init__()
+        self.layer_1_r = Inc(in_channels=1, filters=64)
+        self.layer_1_g = Inc(in_channels=1, filters=64)
+        self.layer_1_b = Inc(in_channels=1, filters=64)
+
+        self.layer_2_r = CAM(256, 4)
+        self.layer_2_g = CAM(256, 4)
+        self.layer_2_b = CAM(256, 4)
+
+        self.layer_3 = Inc(768, 64)
+        self.layer_4 = CAM(256, 4)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, 3, H, W) RGB input
+        Returns:
+            feat: (B, 256, H, W) feature map
+        """
+        r = x[:, 0:1, :, :]
+        g = x[:, 1:2, :, :]
+        b = x[:, 2:3, :, :]
+
+        r = self.layer_2_r(self.layer_1_r(r))
+        g = self.layer_2_g(self.layer_1_g(g))
+        b = self.layer_2_b(self.layer_1_b(b))
+
+        feat = torch.cat([r, g, b], dim=1)
+        feat = self.layer_4(self.layer_3(feat))
+        return feat
+
+
 class DualPriorFusion(nn.Module):
     """
     Adaptive fusion of DICAM output (RGB color-attenuation prior)

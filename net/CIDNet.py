@@ -4,7 +4,8 @@ from net.HVI_transform import RGB_HVI
 from net.transformer_utils import *
 from net.LCA import *
 from huggingface_hub import PyTorchModelHubMixin
-from net.DICAM_modules import DICAM, DualPriorFusion
+from net.DICAM_modules import DICAM, DualPriorFusion, DICAM_Feat
+import torch.nn.functional as F
 
 class CIDNet(nn.Module, PyTorchModelHubMixin):
     def __init__(self, 
@@ -13,12 +14,12 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
                  norm=False
         ):
         super(CIDNet, self).__init__()
-        
-        # ===== Dual-prior fusion branch =====
-        self.dicam = DICAM()
-        self.fusion = DualPriorFusion(in_channels=6, reduction=4, mid_channels=16)
-        # ====================================
-        
+
+        # ===== DICAM feature extractor + projection =====
+        self.dicam_feat = DICAM_Feat()
+        self.dicam_proj = nn.Conv2d(256, channels[1], 1)  # 256 -> 36
+        # ================================================
+
         [ch1, ch2, ch3, ch4] = channels
         [head1, head2, head3, head4] = heads
         
@@ -74,24 +75,22 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
         self.trans = RGB_HVI()
         
     def forward(self, x):
-        
-        # ===== Dual-prior fusion =====
-        x_raw = x
-        
-        # NEW: DICAM 在 256x256 跑(避免全分辨率 OOM),输出上采样回原尺寸
+        # ===== DICAM feature extraction with OOM protection =====
         orig_h, orig_w = x.shape[2], x.shape[3]
         if max(orig_h, orig_w) > 384:
-            # 全分辨率输入(eval 时): DICAM 用降采样跑
-            import torch.nn.functional as F_
-            x_small = F_.interpolate(x, size=(256, 256), mode='bilinear', align_corners=False)
-            x_dicam_small = self.dicam(x_small)
-            x_dicam = F_.interpolate(x_dicam_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
+            # Large input (eval): run DICAM at 256x256 then upsample
+            x_small = F.interpolate(x, size=(256, 256), mode='bilinear', align_corners=False)
+            dicam_feat_small = self.dicam_feat(x_small)
+            dicam_feat = F.interpolate(dicam_feat_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
         else:
-            # 训练时(256x256 crop): 直接跑
-            x_dicam = self.dicam(x)
-        
-        x = self.fusion(x_dicam, x_raw)
+            # Training (256x256 crop): run directly
+            dicam_feat = self.dicam_feat(x)
 
+        # Project to ch2 (36) and downsample to match HVE_block1 output
+        dicam_feat = self.dicam_proj(dicam_feat)  # (B, 256, H, W) -> (B, 36, H, W)
+        dicam_feat = F.avg_pool2d(dicam_feat, kernel_size=2, stride=2)  # (B, 36, H/2, W/2)
+
+        # ===== HVI main branch (input is raw sRGB) =====
         dtypes = x.dtype
         hvi = self.trans.HVIT(x)
         i = hvi[:,2,:,:].unsqueeze(1).to(dtypes)
@@ -100,6 +99,10 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
         i_enc1 = self.IE_block1(i_enc0)
         hv_0 = self.HVE_block0(hvi)
         hv_1 = self.HVE_block1(hv_0)
+
+        # Inject DICAM features as residual
+        hv_1 = hv_1 + dicam_feat
+
         i_jump0 = i_enc0
         hv_jump0 = hv_0
         
