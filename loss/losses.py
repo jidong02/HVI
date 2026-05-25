@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import lpips as _lpips_pkg
 from loss.vgg_arch import VGGFeatureExtractor, Registry
 from loss.loss_utils import *
 
@@ -191,3 +192,84 @@ class SSIM(torch.nn.Module):
 
 
 
+# ============== NEW: LAB Color Loss ==============
+def rgb_to_lab(rgb):
+    """
+    可微的 RGB → LAB 转换。
+    输入: (B, 3, H, W), [0, 1] 范围
+    输出: (B, 3, H, W), L 大致 [0, 100], a/b 大致 [-128, 127]
+    """
+    eps = 1e-8
+    # sRGB → linear RGB
+    mask = (rgb > 0.04045).float()
+    linear = mask * (((rgb + 0.055) / 1.055).clamp(min=eps)) ** 2.4 + (1 - mask) * (rgb / 12.92)
+    
+    # linear RGB → XYZ (D65)
+    M = torch.tensor([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041]
+    ], device=rgb.device, dtype=rgb.dtype)
+    # (B, 3, H, W) → (B, H, W, 3)
+    linear_hw3 = linear.permute(0, 2, 3, 1)
+    xyz = linear_hw3 @ M.T  # (B, H, W, 3)
+    
+    # XYZ → LAB
+    Xn, Yn, Zn = 0.95047, 1.0, 1.08883
+    xyz_n = xyz / torch.tensor([Xn, Yn, Zn], device=rgb.device, dtype=rgb.dtype)
+    
+    delta = 6.0 / 29.0
+    mask_f = (xyz_n > delta ** 3).float()
+    f = mask_f * (xyz_n.clamp(min=eps)) ** (1.0/3.0) + (1 - mask_f) * (xyz_n / (3 * delta ** 2) + 4.0/29.0)
+    
+    L = 116.0 * f[..., 1] - 16.0
+    a = 500.0 * (f[..., 0] - f[..., 1])
+    b = 200.0 * (f[..., 1] - f[..., 2])
+    
+    lab = torch.stack([L, a, b], dim=-1)              # (B, H, W, 3)
+    return lab.permute(0, 3, 1, 2)                    # (B, 3, H, W)
+
+
+class LABLoss(nn.Module):
+    """
+    LAB 色彩空间的 L1 损失，重点关注 a/b 色度通道。
+    """
+    def __init__(self, loss_weight=0.5, ab_weight=2.0):
+        super().__init__()
+        self.weight = loss_weight
+        self.ab_weight = ab_weight  # a/b 通道权重更高
+        self.l1 = nn.L1Loss()
+    
+    def forward(self, pred, target):
+        pred = pred.clamp(0, 1)
+        target = target.clamp(0, 1)
+        lab_pred = rgb_to_lab(pred)
+        lab_target = rgb_to_lab(target)
+        # L 通道用标准 L1
+        L_loss = self.l1(lab_pred[:, 0:1], lab_target[:, 0:1]) / 100.0
+        # a/b 通道（色度）用加权 L1，对色偏更敏感
+        ab_loss = self.l1(lab_pred[:, 1:], lab_target[:, 1:]) / 128.0
+        return self.weight * (L_loss + self.ab_weight * ab_loss)
+
+        # ============== NEW: LPIPS Loss ==============
+
+class LPIPSLoss(nn.Module):
+    """
+    LPIPS 感知损失，AlexNet backbone (与 GuidedHybSensUIR TCSVT 2025 一致)
+    
+    输入: pred, target ∈ [0, 1], shape (B, 3, H, W)
+    内部转换到 [-1, 1] 喂给 LPIPS 网络
+    LPIPS 网络参数冻结，不会被训练
+    """
+    def __init__(self, loss_weight=0.5, net='alex'):
+        super().__init__()
+        self.weight = loss_weight
+        self.lpips_net = _lpips_pkg.LPIPS(net=net, verbose=False)
+        for param in self.lpips_net.parameters():
+            param.requires_grad = False
+        self.lpips_net.eval()
+    
+    def forward(self, pred, target):
+        pred = pred.clamp(0, 1) * 2.0 - 1.0
+        target = target.clamp(0, 1) * 2.0 - 1.0
+        return self.weight * self.lpips_net(pred, target).mean()

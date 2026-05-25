@@ -61,11 +61,13 @@ def train(epoch):
         gt_hvi = model.HVIT(gt_rgb)
         loss_hvi = L1_loss(output_hvi, gt_hvi) + D_loss(output_hvi, gt_hvi) + E_loss(output_hvi, gt_hvi) + opt.P_weight * P_loss(output_hvi, gt_hvi)[0]
         loss_rgb = L1_loss(output_rgb, gt_rgb) + D_loss(output_rgb, gt_rgb) + E_loss(output_rgb, gt_rgb) + opt.P_weight * P_loss(output_rgb, gt_rgb)[0]
-        loss = loss_rgb + opt.HVI_weight * loss_hvi
+        loss_lab = LAB_loss(output_rgb, gt_rgb)
+        loss_lpips = LPIPS_loss(output_rgb, gt_rgb)   # NEW
+        loss = loss_rgb + opt.HVI_weight * loss_hvi + loss_lab + loss_lpips   # NEW
         iter += 1
         
         if opt.grad_clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01, norm_type=2)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, norm_type=2)
         
         optimizer.zero_grad()
         loss.backward()
@@ -132,6 +134,11 @@ def load_datasets():
     elif opt.dataset == 'fivek':
         train_set = get_fivek_training_set(opt.data_train_fivek,size=opt.cropSize)
         test_set = get_fivek_eval_set(opt.data_val_fivek)
+
+    elif opt.dataset == 'uieb':
+        train_set = get_uieb_training_set(opt.data_train_uieb, size=opt.cropSize)
+        test_set = get_SICE_eval_set(opt.data_val_uieb)
+
     else:
         raise Exception("should choose a dataset")
     
@@ -144,7 +151,12 @@ def build_model():
     model = CIDNet().cuda()
     if opt.start_epoch > 0:
         pth = f"./weights/train/epoch_{opt.start_epoch}.pth"
+        print(f'===> Resuming from checkpoint: {pth}')
         model.load_state_dict(torch.load(pth, map_location=lambda storage, loc: storage))
+    elif opt.pretrain:
+        print(f'===> Loading pretrained weights from: {opt.pretrain}')
+        state = torch.load(opt.pretrain, map_location=lambda storage, loc: storage)
+        missing, unexpected = model.load_state_dict(state, strict=False)
     return model
 
 def make_scheduler():
@@ -175,7 +187,10 @@ def init_loss():
     D_loss = SSIM(weight=D_weight).cuda()
     E_loss = EdgeLoss(loss_weight=E_weight).cuda()
     P_loss = PerceptualLoss({'conv1_2': 1, 'conv2_2': 1,'conv3_4': 1,'conv4_4': 1}, perceptual_weight = P_weight ,criterion='mse').cuda()
-    return L1_loss,P_loss,E_loss,D_loss
+    LAB_loss = LABLoss(loss_weight=opt.LAB_weight, ab_weight=2.0).cuda()
+    LPIPS_loss = LPIPSLoss(loss_weight=opt.LPIPS_weight, net='alex').cuda()   # NEW
+
+    return L1_loss, P_loss, E_loss, D_loss, LAB_loss, LPIPS_loss   # NEW: 多返回一个
 
 if __name__ == '__main__':  
     
@@ -185,8 +200,10 @@ if __name__ == '__main__':
     train_init()
     training_data_loader, testing_data_loader = load_datasets()
     model = build_model()
+
     optimizer,scheduler = make_scheduler()
-    L1_loss,P_loss,E_loss,D_loss = init_loss()
+
+    L1_loss, P_loss, E_loss, D_loss, LAB_loss, LPIPS_loss = init_loss()   # NEW
     
     '''
     train
@@ -211,6 +228,8 @@ if __name__ == '__main__':
         f.write(f"D_weight: {opt.D_weight}\n")  
         f.write(f"E_weight: {opt.E_weight}\n")  
         f.write(f"P_weight: {opt.P_weight}\n")  
+        f.write(f"LAB_weight: {opt.LAB_weight}\n")     # NEW
+        f.write(f"LPIPS_weight: {opt.LPIPS_weight}\n") # NEW
         f.write("| Epochs | PSNR | SSIM | LPIPS |\n")  
         f.write("|----------------------|----------------------|----------------------|----------------------|\n")  
         
@@ -254,6 +273,11 @@ if __name__ == '__main__':
             if opt.dataset == 'fivek':
                 output_folder = 'fivek/'
                 label_dir = opt.data_valgt_fivek
+                norm_size = False
+
+            if opt.dataset == 'uieb':
+                output_folder = 'UIEB/'
+                label_dir = opt.data_valgt_uieb
                 norm_size = False
 
             im_dir = opt.val_folder + output_folder + '*.png'
