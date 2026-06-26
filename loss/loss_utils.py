@@ -5,6 +5,18 @@ from math import exp
 from torch.autograd import Variable
 
 
+def focal_frequency_loss(pred, target, alpha=1.0):
+    """Focal frequency loss on luminance channel. pred/target: (B,3,H,W) RGB in [0,1]."""
+    def lum(x):
+        return (0.299 * x[:, 0] + 0.587 * x[:, 1] + 0.114 * x[:, 2]).unsqueeze(1)
+    pf = torch.fft.fft2(lum(pred), norm='ortho')
+    tf = torch.fft.fft2(lum(target), norm='ortho')
+    d = pf - tf
+    w = (d.abs() ** alpha).detach()
+    w = w / (w.amax(dim=(-2, -1), keepdim=True) + 1e-8)
+    return (w * (d.abs() ** 2)).mean()
+
+
 
 
 def reduce_loss(loss, reduction):
