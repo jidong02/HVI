@@ -95,4 +95,14 @@ def option():
     # LFRC v2
     parser.add_argument('--lfrc', type=_str2bool, default=False)
 
+    # SWSA I-branch
+    parser.add_argument('--swsa', type=_str2bool, default=False)
+
+    # MCSS-Lite
+    parser.add_argument('--mcss', type=_str2bool, default=False)
+    parser.add_argument('--num_mcss_blocks', type=int, default=1)
+
+    # DCSSB
+    parser.add_argument('--dcssb', type=_str2bool, default=False)
+
     return parser

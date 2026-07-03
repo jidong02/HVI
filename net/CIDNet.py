@@ -4,6 +4,10 @@ from net.HVI_transform import RGB_HVI
 from net.transformer_utils import *
 from net.LCA import *
 from net.lf_corrector import ILowFreqCorrector
+from net.swsa import IBranchSWSA
+from net.mcss_lite import CIDNet_MCSS_Enhancer
+from net.mcss_mamba import CIDNet_MCSS_Mamba
+from net.dcssb import CIDNet_DCSSB
 from huggingface_hub import PyTorchModelHubMixin
 
 class CIDNet(nn.Module, PyTorchModelHubMixin):
@@ -11,7 +15,11 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
                  channels=[36, 36, 72, 144],
                  heads=[1, 2, 4, 8],
                  norm=False,
-                 use_lfrc=False
+                 use_lfrc=False,
+                 use_swsa=False,
+                 use_mcss=False,
+                 num_mcss_blocks=1,
+                 use_dcssb=False
         ):
         super(CIDNet, self).__init__()
 
@@ -68,8 +76,18 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
 
         self.trans = RGB_HVI()
         self.use_lfrc = use_lfrc
+        self.use_swsa = use_swsa
+        self.use_mcss = use_mcss
+        self.num_mcss_blocks = num_mcss_blocks
+        self.use_dcssb = use_dcssb
         if self.use_lfrc:
             self.lfrc = ILowFreqCorrector()
+        if self.use_swsa:
+            self.swsa = IBranchSWSA(ch4)
+        if self.use_mcss:
+            self.mcss = CIDNet_MCSS_Mamba(ch4, num_blocks=num_mcss_blocks)
+        if self.use_dcssb:
+            self.dcssb = CIDNet_DCSSB(ch4, num_memblocks=2, num_resblocks_per=2)
 
     def forward(self, x):
         dtypes = x.dtype
@@ -99,6 +117,18 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
 
         i_enc4 = self.I_LCA3(i_enc3, hv_3)
         hv_4 = self.HV_LCA3(hv_3, i_enc3)
+
+        # SWSA I-branch enhancement (frequency gating at bottleneck)
+        if self.use_swsa:
+            i_enc4, hv_4 = self.swsa(i_enc4, hv_4)
+
+        # MCSS spatial enhancement (both branches, large-kernel multi-scale)
+        if self.use_mcss:
+            i_enc4, hv_4 = self.mcss(i_enc4, hv_4)
+
+        # DCSSB: true dense-connected SS blocks
+        if self.use_dcssb:
+            i_enc4, hv_4 = self.dcssb(i_enc4, hv_4)
 
         i_dec4 = self.I_LCA4(i_enc4, hv_4)
         hv_4 = self.HV_LCA4(hv_4, i_enc4)

@@ -142,7 +142,9 @@ def load_datasets():
 
 def build_model():
     print('===> Building model ')
-    model = CIDNet(use_lfrc=opt.lfrc).cuda()
+    model = CIDNet(use_lfrc=opt.lfrc, use_swsa=opt.swsa, use_mcss=opt.mcss,
+                   num_mcss_blocks=opt.num_mcss_blocks,
+                   use_dcssb=opt.dcssb).cuda()
     if opt.pretrain:
         model.load_state_dict(torch.load(opt.pretrain, map_location=lambda storage, loc: storage), strict=False)
         print(f'===> Loaded pretrain from {opt.pretrain}')
