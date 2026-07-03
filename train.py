@@ -61,6 +61,10 @@ def train(epoch):
         loss_hvi = L1_loss(output_hvi, gt_hvi) + D_loss(output_hvi, gt_hvi) + E_loss(output_hvi, gt_hvi) + opt.P_weight * P_loss(output_hvi, gt_hvi)[0]
         loss_rgb = L1_loss(output_rgb, gt_rgb) + D_loss(output_rgb, gt_rgb) + E_loss(output_rgb, gt_rgb) + opt.P_weight * P_loss(output_rgb, gt_rgb)[0]
         loss = loss_rgb + opt.HVI_weight * loss_hvi
+        if FWL_loss is not None:
+            loss = loss + opt.HVI_weight * FWL_loss(output_rgb, gt_rgb)
+        if HVI_loss_fn is not None:
+            loss = loss + 0.5 * HVI_loss_fn(output_rgb, gt_rgb)
         iter += 1
 
         if opt.grad_clip:
@@ -142,9 +146,8 @@ def load_datasets():
 
 def build_model():
     print('===> Building model ')
-    model = CIDNet(use_lfrc=opt.lfrc, use_swsa=opt.swsa, use_mcss=opt.mcss,
-                   num_mcss_blocks=opt.num_mcss_blocks,
-                   use_dcssb=opt.dcssb).cuda()
+    model = CIDNet(use_lfrc=opt.lfrc, use_swsa=opt.swsa,
+                   use_dcssb=opt.dcssb, use_web=opt.web).cuda()
     if opt.pretrain:
         model.load_state_dict(torch.load(opt.pretrain, map_location=lambda storage, loc: storage), strict=False)
         print(f'===> Loaded pretrain from {opt.pretrain}')
@@ -181,7 +184,17 @@ def init_loss():
     D_loss = SSIM(weight=D_weight).cuda()
     E_loss = EdgeLoss(loss_weight=E_weight).cuda()
     P_loss = PerceptualLoss({'conv1_2': 1, 'conv2_2': 1,'conv3_4': 1,'conv4_4': 1}, perceptual_weight = P_weight ,criterion='mse').cuda()
-    return L1_loss,P_loss,E_loss,D_loss
+
+    # Optional: FWL + HVI losses
+    FWL_loss = None; HVI_loss = None
+    if opt.fwl:
+        from loss.fwl_loss import FWLLoss
+        FWL_loss = FWLLoss().cuda()
+    if opt.hvi_loss:
+        from loss.hvi_loss import HVILoss
+        HVI_loss = HVILoss(model.trans).cuda()
+
+    return L1_loss, P_loss, E_loss, D_loss, FWL_loss, HVI_loss
 
 if __name__ == '__main__':
 
@@ -199,7 +212,7 @@ if __name__ == '__main__':
     training_data_loader, testing_data_loader = load_datasets()
     model = build_model()
     optimizer,scheduler = make_scheduler()
-    L1_loss,P_loss,E_loss,D_loss = init_loss()
+    L1_loss, P_loss, E_loss, D_loss, FWL_loss, HVI_loss_fn = init_loss()
 
     '''
     train

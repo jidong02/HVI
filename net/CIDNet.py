@@ -5,9 +5,8 @@ from net.transformer_utils import *
 from net.LCA import *
 from net.lf_corrector import ILowFreqCorrector
 from net.swsa import IBranchSWSA
-from net.mcss_lite import CIDNet_MCSS_Enhancer
-from net.mcss_mamba import CIDNet_MCSS_Mamba
 from net.dcssb import CIDNet_DCSSB
+from net.web import WaveletEnhanceBlock
 from huggingface_hub import PyTorchModelHubMixin
 
 class CIDNet(nn.Module, PyTorchModelHubMixin):
@@ -17,9 +16,9 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
                  norm=False,
                  use_lfrc=False,
                  use_swsa=False,
-                 use_mcss=False,
-                 num_mcss_blocks=1,
-                 use_dcssb=False
+                 use_dcssb=False,
+                 use_web=False,
+                 web_i_only=True
         ):
         super(CIDNet, self).__init__()
 
@@ -77,15 +76,17 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
         self.trans = RGB_HVI()
         self.use_lfrc = use_lfrc
         self.use_swsa = use_swsa
-        self.use_mcss = use_mcss
-        self.num_mcss_blocks = num_mcss_blocks
         self.use_dcssb = use_dcssb
+        self.use_web = use_web
+        self.web_i_only = web_i_only
         if self.use_lfrc:
             self.lfrc = ILowFreqCorrector()
         if self.use_swsa:
             self.swsa = IBranchSWSA(ch4)
-        if self.use_mcss:
-            self.mcss = CIDNet_MCSS_Mamba(ch4, num_blocks=num_mcss_blocks)
+        if self.use_web:
+            self.web_i = WaveletEnhanceBlock(ch4)
+            if not web_i_only:
+                self.web_hv = WaveletEnhanceBlock(ch4)
         if self.use_dcssb:
             self.dcssb = CIDNet_DCSSB(ch4, num_memblocks=2, num_resblocks_per=2)
 
@@ -122,13 +123,15 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
         if self.use_swsa:
             i_enc4, hv_4 = self.swsa(i_enc4, hv_4)
 
-        # MCSS spatial enhancement (both branches, large-kernel multi-scale)
-        if self.use_mcss:
-            i_enc4, hv_4 = self.mcss(i_enc4, hv_4)
-
         # DCSSB: true dense-connected SS blocks
         if self.use_dcssb:
             i_enc4, hv_4 = self.dcssb(i_enc4, hv_4)
+
+        # WEB: wavelet enhancement (I-only or both branches)
+        if self.use_web:
+            i_enc4 = i_enc4 + self.web_i(i_enc4)
+            if not self.web_i_only:
+                hv_4 = hv_4 + self.web_hv(hv_4)
 
         i_dec4 = self.I_LCA4(i_enc4, hv_4)
         hv_4 = self.HV_LCA4(hv_4, i_enc4)

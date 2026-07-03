@@ -105,4 +105,11 @@ def option():
     # DCSSB
     parser.add_argument('--dcssb', type=_str2bool, default=False)
 
+    # WEB
+    parser.add_argument('--web', type=_str2bool, default=False)
+
+    # Loss flags
+    parser.add_argument('--fwl', type=_str2bool, default=False)
+    parser.add_argument('--hvi_loss', type=_str2bool, default=False)
+
     return parser
